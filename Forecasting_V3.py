@@ -1,18 +1,21 @@
 #En mi caso estoy realizando todo en Drive para poder mandar automaticamente la información sin necesidad de almacenarla localmente
 import os
 from google.colab import drive
+import pandas as pd
 drive.mount("/content/drive")
 
 #Carpeta principal
 Proyecto="/content/drive/MyDrive/Forecasting-V2"
 
 #Seleccion de la sucursal
-indice_sucursal=1 #Ahora el código ha sido adaptado para aceptar cualquiera de las 4 sucursales
-mes="Marzo" #El código puede trabajar por mes o por trimestre
+Inicio_Reporte=pd.Timestamp("2026-08-03") #El lunes siguiente al último domingo que se exluye
+Fin_Reporte=pd.Timestamp("2026-08-30") #Último Domingo que abarca el reporte
+
+indice_sucursal=4
+mes="Agosto"
 Rutas={
     "sucursal": f"{Proyecto}/Suc{indice_sucursal}"
   }
-
 #Subcarpetas
 Subrutas={
     "modelos": f"{Rutas["sucursal"]}/modelos",
@@ -28,19 +31,40 @@ for ruta in Subrutas.values():
 
 print("Carpetas listas en Drive")
 
-import pandas as pd
 import numpy as np
 import joblib
 import warnings
 from datetime import datetime
 
-#Costantes relacionadas al forecasting:
-frecuencia="W-SUN" #Importanticimo debe de coincidir con el formato de entrada
-horizonte=4 #El código funciona para forecasting a 4, 8 o 13 semanas (1, 2 o 3 meses)
-
 #Rutas de Entrada para Entrenamiento
 ruta_Intermitente=f"{Subrutas["datos"]}/Intermitentes sucursal {indice_sucursal}.csv"
 ruta_ML=f"{Subrutas["datos"]}/ML sucursal {indice_sucursal}.csv"
+
+#Calculo de Horizonte de pronóstico automático:
+def calcular_horizonte(
+    ruta_intermitente: str=ruta_Intermitente,
+    ruta_ML: str=ruta_ML,
+    fin_reporte: pd.Timestamp=Fin_Reporte,
+    freq: str=frecuencia
+ ) ->int:
+    fecha_max_intermitente=pd.to_datetime(pd.read_csv(ruta_intermitente,usecols=["fecha"])["fecha"]).max()
+    fecha_max_ML=pd.to_datetime(pd.read_csv(ruta_ML,usecols=["fecha"])["fecha"]).max()
+    fecha_final_entrenamiento=max(fecha_max_intermitente,fecha_max_ML)
+
+    pasos=pd.date_range(start=fecha_final_entrenamiento,end=fin_reporte,freq=freq)
+    horizonte=len(pasos)-1
+
+    if horizonte<=0:
+        raise ValueError(
+            f"Horizonte calculando inválido ({horizonte})."
+            f"Última fecha de histórico para entrenamiento: {fecha_final_entrenamiento.date()}, "
+            f"Fecha final de Pronóstico: {fin_reporte.date()}"
+        )
+
+    return horizonte
+
+horizonte=calcular_horizonte(ruta_Intermitente,ruta_ML,Fin_Reporte)
+print(f"Horizonte calculado automáticamente: {horizonte} semanas")
 
 print(f"\nEsperando archivos en:")
 print(f"{ruta_Intermitente}")
@@ -126,16 +150,44 @@ def cargar_csv(
     
 !pip install mlforecast lightgbm
 
-#Inicio de entrenamiento y pronóstico de Intermitentes
 from mlforecast import MLForecast
 from mlforecast.lag_transforms import RollingMean, RollingStd
+import lightgbm as lgb
 from lightgbm import LGBMRegressor
 
+#Configuración de features por sucursal de Intermitentes
+lags_int_grupo_A=[4,8,12,52]
+lags_int_grupo_B=[4,8,13,26,52]
+lags_int_grupo_C=[4,8,13,52]
+
+lag_transforms_int_grupo_A={
+    4: [RollingMean(window_size=4),RollingStd(window_size=4)],
+    8: [RollingMean(window_size=8)],
+    12: [RollingMean(window_size=12)],
+}
+
+lag_transforms_int_grupo_B={
+    4: [RollingMean(window_size=4),RollingStd(window_size=4)],
+    8: [RollingMean(window_size=8)],
+    13: [RollingMean(window_size=13)]
+}
+
+config_sucursal_int={
+    1:{"lags_select":lags_int_grupo_C,"lag_transforms_corto":lag_transforms_int_grupo_B},
+    2:{"lags_select":lags_int_grupo_C,"lag_transforms_corto":lag_transforms_int_grupo_B},
+    3:{"lags_select":lags_int_grupo_C,"lag_transforms_corto":lag_transforms_int_grupo_B},
+    4:{"lags_select":lags_int_grupo_C,"lag_transforms_corto":lag_transforms_int_grupo_B},
+    6:{"lags_select":lags_int_grupo_A,"lag_transforms_corto":lag_transforms_int_grupo_A},
+    7:{"lags_select":lags_int_grupo_A,"lag_transforms_corto":lag_transforms_int_grupo_A}
+}
+
+#Inicio de entrenamiento y pronóstico de Intermitentes
 def entrenar_adida(
     df_intermitente: pd.DataFrame,
     horizonte: int=horizonte,
 ) ->MLForecast:
-
+    
+    cfg_int=config_sucursal_int[indice_sucursal]
     df_model=df_intermitente[["unique_id","ds","y"]].copy()
     df_model["unique_id"]=df_model["unique_id"].astype(int)
 
@@ -163,30 +215,107 @@ def entrenar_adida(
     )
 
     if horizonte<=8:
-        lags=[4,8,12,52]
-        lag_transforms={
-            4: [RollingMean(window_size=4),RollingStd(window_size=4)],
-            8: [RollingMean(window_size=8)],
-            12: [RollingMean(window_size=12)]
-            }
-        tvp=1.85
+        lags=cfg_int["lags_select"]
+        lag_transforms=cfg_int["lag_transforms_corto"]
+        tvp=1.65
     else:
-        lags=[13,52]
+        df_model["quarter"]=df_model["ds"].dt.quarter.astype(int)
+
+        lags=[13,26,52]
         lag_transforms={
-            13: [RollingMean(window_size=13),RollingStd(window_size=13)],
-            52: [RollingMean(window_size=52)]
-            }    
+            13: [RollingMean(window_size=13)]
+            }
         tvp=1.35
 
+    #Primera parte: Encontrar n_optimo con función objetivo compuesta
+    def composite_metric(y_pred,dataset):
+        y_true=dataset.get_label()
+        mae=np.abs(y_pred-y_true).mean()
+        rmse=np.sqrt(((y_pred-y_true)**2).mean())
+        mean_y=np.abs(y_true).mean()
+
+        if mean_y==0:
+          return "composite_error",float("inf"),False
+
+        mae_norm=mae/mean_y
+        rmse_norm=rmse/mean_y
+        naive_error=np.abs(np.diff(y_true)).mean()
+        mase=(mae/naive_error) if naive_error>0 else float("inf")
+
+        alpha=0.6
+        beta=0.3
+        gamma=0.1
+        score=alpha*mae_norm+beta*rmse_norm+gamma*mase
+        return "composite_error",score,False #False = Más pequeño mejor
+
+    mlf_prep=MLForecast(
+        models={"lgbm":LGBMRegressor()},
+        freq=frecuencia,
+        lags=lags,
+        lag_transforms=lag_transforms
+    )
+
+    features_df=mlf_prep.preprocess(
+        df_model,
+        static_features=["unique_id"]
+        )
+
+    x_columns=[c for c in features_df.columns if c not in ["unique_id","ds","y"]]
+    features_df=features_df.dropna(subset=x_columns)
+
+    fecha_max=features_df["ds"].max()
+    fecha_corte_features=fecha_max-pd.tseries.frequencies.to_offset(frecuencia)*horizonte*4
+
+    x_train=features_df[features_df["ds"]<=fecha_corte_features][x_columns]
+    y_train=features_df[features_df["ds"]<=fecha_corte_features]["y"]
+    x_val=features_df[features_df["ds"]>fecha_corte_features][x_columns]
+    y_val=features_df[features_df["ds"]>fecha_corte_features]["y"]
+
+    lgb_train=lgb.Dataset(x_train,y_train)
+    lgb_val=lgb.Dataset(x_val,y_val,reference=lgb_train)
+
+    params={
+        "objective":"tweedie",
+        "tweedie_variance_power":tvp,
+        "metric":"None",
+        "learning_rate":0.05,
+        "num_leaves":31,
+        "max_depth":8,
+        "min_child_samples":20,
+        "subsample":0.8,
+        "colsample_bytree":0.8,
+        "n_jobs":-1,
+        "random_state":42,
+        "verbose":-1
+    }
+
+    callbacks=[
+        lgb.early_stopping(stopping_rounds=50,verbose=False),
+        lgb.log_evaluation(period=-1)
+    ]
+
+    booster=lgb.train(
+        params,
+        lgb_train,
+        num_boost_round=1000,
+        valid_sets=[lgb_val],
+        feval=composite_metric,
+        callbacks=callbacks
+    )
+
+    n_optimo=booster.best_iteration
+    print(f"Estimators óptimos encontrados: {n_optimo}")
+
+    #Parte 2: Definición del modelo
     mlf = MLForecast(
         models={
             "lgbm_intermitente": LGBMRegressor(
                 objective="tweedie",
                 tweedie_variance_power=tvp,
-                n_estimators=500,
+                n_estimators=n_optimo,
                 learning_rate=0.05,
                 num_leaves=31,
-                max_depth=6,
+                max_depth=8,
                 min_child_samples=20,
                 subsample=0.8,
                 colsample_bytree=0.8,
@@ -226,8 +355,7 @@ def entrenar_adida(
          }),include_groups=False)
          .reset_index()
          )
-      
-          
+        
       skus_riesgosos=cv_por_sku[cv_por_sku["MAE"]>mae*1.5]
       if len(skus_riesgosos)>0:
           print(f"Cantidad de SKUs con riesgo en el pronóstico de intermitentes: {len(skus_riesgosos)}, con un error 1.5 veces mayor al promedio ({mae:.2f})")
@@ -248,25 +376,22 @@ def entrenar_adida(
         )
     joblib.dump(mlf,f"{Subrutas['modelos']}/mlf_intermitentes_{mes}.joblib")
     df_model.to_parquet(f"{Subrutas['modelos']}/df_intermitentes_{mes}.parquet",index=False)
+
+    metada={
+        "fecha_entrenamiento":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "num_SKUs":df_intermitente["unique_id"].nunique(),
+        "horizonte":horizonte,
+        "freq":frecuencia,
+        "lags":lags,
+        "tvp":tvp,
+        "skus":df_intermitente["unique_id"].unique().tolist()
+    }
     
     if horizonte<=8:
-      joblib.dump({
-          "fecha_entrenamiento":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-          "num_SKUs":df_intermitente["unique_id"].nunique(),
-          "horizonte":horizonte,
-          "freq":frecuencia,
-          "metricas_cv":metricas_df.to_dict(orient="records"),
-          "skus":df_intermitente["unique_id"].unique().tolist()
-      },f"{Subrutas['metadatos']}/metadatos_intermitentes_{mes}.joblib")
-    else:
-      joblib.dump({
-          "fecha_entrenamiento":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-          "num_SKUs":df_intermitente["unique_id"].nunique(),
-          "horizonte":horizonte,
-          "freq":frecuencia,
-          "skus":df_intermitente["unique_id"].unique().tolist()
-      },f"{Subrutas['metadatos']}/metadatos_intermitentes_{mes}.joblib")
+      metada["metricas_cv"]=metricas_df.to_dict(orient="records")
 
+    joblib.dump(metada,f"{Subrutas['metadatos']}/metadatos_intermitentes_{mes}.joblib")
+    
     print("Modelo Intermitente ML guardado en Drive")
     return mlf
     
@@ -283,49 +408,40 @@ def pronosticar_adida(
   else:
     df_model=df_intermitente[["unique_id","ds","y"]].copy()
 
+  df_model["unique_id"]=df_model["unique_id"].astype(int)
   df_futuro=mlf.make_future_dataframe(h=horizonte)
   df_futuro["unique_id"]=df_futuro["unique_id"].astype(int)
 
   ultima_prop=(
-      df_intermitente.assign(
-          prop_ventas=df_intermitente.groupby("unique_id")["y"].transform(lambda x: (x.shift(1)>0).expanding().mean())
+      df_model.assign(
+          prop_ventas=df_model.groupby("unique_id")["y"].transform(lambda x: (x.shift(1)>0).expanding().mean())
       )
       .groupby("unique_id")["prop_ventas"].last().reset_index()
       )
 
-  ultima_prop["unique_id"] = ultima_prop["unique_id"].astype(int)
-
-  def calculo_semanas_sin_venta_actual(grupo):
+  def semanas_sin_venta_actual(grupo):
       y=grupo.sort_values("ds")["y"].values
       contador=0
       for val in reversed(y):
           if val>0:
             break
-            contador+=1
+          contador+=1
       return contador
 
   ultimas_semanas=(
-      df_intermitente.groupby("unique_id")
-      .apply(calculo_semanas_sin_venta_actual,include_groups=False)
+      df_model.groupby("unique_id")
+      .apply(semanas_sin_venta_actual,include_groups=False)
       .reset_index()
       .rename(columns={0:"semanas_sin_venta"})
   )
-  ultimas_semanas["unique_id"] = ultimas_semanas["unique_id"].astype(int)
 
-  df_futuro=pd.merge(
-      df_futuro,
-      ultima_prop,
-      on="unique_id",
-      how="left"
-  )
-
-  df_futuro=pd.merge(
-      df_futuro,
-      ultimas_semanas,
-      on="unique_id",
-      how="left"
-  )
-
+  df_futuro=(df_futuro
+             .merge(ultima_prop,on="unique_id",how="left")
+             .merge(ultimas_semanas,on="unique_id",how="left")
+             )
+  if horizonte>8:
+      df_futuro["quarter"]=df_futuro["ds"].dt.quarter.astype(int)
+  
   forecast_df=mlf.predict(h=horizonte,X_df=df_futuro)
   forecast_df=forecast_df.rename(columns={"lgbm_intermitente":"y_pred"})
   forecast_df["y_pred"]=forecast_df["y_pred"].clip(lower=0)
@@ -333,59 +449,159 @@ def pronosticar_adida(
   forecast_df.to_parquet(f"{Subrutas['pronosticos']}/forecast_intermitente_{mes}.parquet",index=False)
 
   return forecast_df
-
 #Fin de entrenamiento y pronóstico de Intermitentes
 
-#Inicio de entrenamiento y pronóstico de Continuos
+#Configuración de features por sucursal de Continuos
+features_base_ml=["y_prom_semana","y_prom_mes","y_prom_trimestre"]
 
+lags_grupo_A=[4,8,12,52]
+lags_grupo_B=[4,8,13,26,52]
+lags_grupo_D=[4,8,12,13,52]
+
+lag_transforms_grupo_A={
+    4: [RollingMean(window_size=4),RollingStd(window_size=4)],
+    12: [RollingMean(window_size=12)],
+    52: [RollingMean(window_size=52)],
+}
+
+lag_transforms_grupo_B={
+    4: [RollingMean(window_size=4),RollingStd(window_size=4)],
+    8: [RollingMean(window_size=8)],
+    13: [RollingMean(window_size=12)],
+    26: [RollingMean(window_size=26)],
+    52: [RollingMean(window_size=52)]
+}
+
+lag_transforms_grupo_C={
+    4: [RollingMean(window_size=4),RollingStd(window_size=4)],
+    8: [RollingMean(window_size=8)],
+    12: [RollingMean(window_size=12)],
+    52: [RollingMean(window_size=52)]
+}
+
+lag_transforms_grupo_D={
+    4: [RollingMean(window_size=4),RollingStd(window_size=4)],
+    8: [RollingMean(window_size=8),RollingStd(window_size=8)],
+    12: [RollingMean(window_size=12)],
+    13: [RollingMean(window_size=13)],
+    52: [RollingMean(window_size=52)]
+}
+
+config_sucursal={
+    1:{"lags_select":lags_grupo_D,"extra_features":["coef_var"],"lag_transforms_corto":lag_transforms_grupo_D},
+    2:{"lags_select":lags_grupo_D,"extra_features":[],"lag_transforms_corto":lag_transforms_grupo_D},
+    3:{"lags_select":lags_grupo_D,"extra_features":[],"lag_transforms_corto":lag_transforms_grupo_D},
+    4:{"lags_select":lags_grupo_B,"extra_features":[],"lag_transforms_corto":lag_transforms_grupo_B},
+    6:{"lags_select":lags_grupo_A,"extra_features":[],"lag_transforms_corto":lag_transforms_grupo_C},
+    7:{"lags_select":lags_grupo_A,"extra_features":[],"lag_transforms_corto":lag_transforms_grupo_C}
+}
+
+#Inicio de entrenamiento y pronóstico de Continuos
 def entrenar_mlforecast(
     df_ML: pd.DataFrame,
     horizonte: int=horizonte
 ) ->MLForecast:
     
-    match indice_sucursal:
-      case 1|2:
-        df_model=df_ML[["unique_id","ds","y","y_prom_semana","y_prom_mes","y_prom_trimestre","coef_var"]].copy()
-      
-      case 3|4:
-        df_model=df_ML[["unique_id","ds","y","y_prom_semana","y_prom_mes","y_prom_trimestre"]].copy()
-
+    cfg=config_sucursal[indice_sucursal]
+    df_model=df_ML[["unique_id","ds","y"]+features_base_ml+cfg["extra_features"]].copy()
     df_model["unique_id"]=df_model["unique_id"].astype(int)
-
+    
     if horizonte<=8:
-      match indice_sucursal:
-        case 1|3|4:
-          lags=[4,8,12,52]
-        case 2:
-          lags=[4,8,12,26,52]
-      match indice_sucursal:
-        case 1|3:
-          lag_transforms={
-              4: [RollingMean(window_size=4),RollingStd(window_size=4)],
-              12: [RollingMean(window_size=12)],
-              52: [RollingMean(window_size=52)]
-              }
-        case 2|4:
-          lag_transforms={
-              4: [RollingMean(window_size=4),RollingStd(window_size=4)],
-              8: [RollingMean(window_size=8)],
-              12: [RollingMean(window_size=12)],
-              26: [RollingMean(window_size=26)]
-              }
+      lags=cfg["lags_select"]
+      lag_transforms=cfg["lag_transforms_corto"]
     else:
-      lags=[13,52]
+      lags=[13,26,52]
       lag_transforms={
-          13: [RollingMean(window_size=13),RollingStd(window_size=13)],
-          52: [RollingMean(window_size=52)]
+          13: [RollingMean(window_size=13)],
           }
+    #Primera parte: Encontrar n_optimo con una función objetivo compuesta
+    def composite_metric(y_pred,dataset):
+        y_true=dataset.get_label()
+        mae=np.abs(y_pred-y_true).mean()
+        rmse=np.sqrt(((y_pred-y_true)**2).mean())
+        mean_y=np.abs(y_true).mean()
 
+        if mean_y==0:
+          return "composite_error",float("inf"),False
+
+        mae_norm=mae/mean_y
+        rmse_norm=rmse/mean_y
+        naive_error=np.abs(np.diff(y_true)).mean()
+        mase=(mae/naive_error) if naive_error>0 else float("inf")
+
+        alpha=1
+        beta=0.0
+        gamma=0.0
+        score=alpha*mae_norm+beta*rmse_norm+gamma*mase
+        return "composite_error",score,False #False = Más pequeño mejor
+
+    mlf_prep=MLForecast(
+        models={"lgbm":LGBMRegressor()},
+        freq=frecuencia,
+        lags=lags,
+        lag_transforms=lag_transforms
+    )
+
+    features_df=mlf_prep.preprocess(
+        df_model,
+        static_features=["unique_id"]
+        )
+
+    x_columns=[c for c in features_df.columns if c not in ["unique_id","ds","y"]]
+    features_df=features_df.dropna(subset=x_columns)
+
+    fecha_max=features_df["ds"].max()
+    fecha_corte_features=fecha_max-pd.tseries.frequencies.to_offset(frecuencia)*horizonte*2
+
+    x_train=features_df[features_df["ds"]<=fecha_corte_features][x_columns]
+    y_train=features_df[features_df["ds"]<=fecha_corte_features]["y"]
+    x_val=features_df[features_df["ds"]>fecha_corte_features][x_columns]
+    y_val=features_df[features_df["ds"]>fecha_corte_features]["y"]
+
+    lgb_train=lgb.Dataset(x_train,y_train)
+    lgb_val=lgb.Dataset(x_val,y_val,reference=lgb_train)
+
+    params={
+        "objective":"regression",
+        "metric":"None",
+        "learning_rate":0.03,
+        "num_leaves":63,
+        "max_depth":8,
+        "min_child_samples":20,
+        "subsample":0.8,
+        "colsample_bytree":0.8,
+        "n_jobs":-1,
+        "random_state":42,
+        "verbose":-1
+    }
+
+    callbacks=[
+        lgb.early_stopping(stopping_rounds=100,verbose=False,min_delta=0.0),
+        lgb.log_evaluation(period=-1)
+    ]
+
+    booster=lgb.train(
+        params,
+        lgb_train,
+        num_boost_round=2000,
+        valid_sets=[lgb_val],
+        feval=composite_metric,
+        callbacks=callbacks
+    )
+
+    n_optimo=booster.best_iteration
+    print(f"Estimators óptimos encontrados: {n_optimo}")
+
+    
+
+    #Parte 2: Definición del modelo
     mlf=MLForecast(
         models={
             "lgbm":LGBMRegressor(
-                n_estimators=500,
+                n_estimators=n_optimo,
                 learning_rate=0.05,
-                num_leaves=31,
-                max_depth=6,
+                num_leaves=63,
+                max_depth=8,
                 min_child_samples=20,
                 subsample=0.8,
                 colsample_bytree=0.8,
@@ -398,7 +614,7 @@ def entrenar_mlforecast(
         lags=lags,
         lag_transforms=lag_transforms
     )
-
+#Parte 3: Cross_Validation en caso de ser aplicable
     if horizonte<=8:
       print("Ejecutando cross-validation")
       cv_df=mlf.cross_validation(
@@ -412,6 +628,8 @@ def entrenar_mlforecast(
 
       mae=(cv_df["lgbm"]-cv_df["y"]).abs().mean()
       rmse=np.sqrt(((cv_df["lgbm"]-cv_df["y"])**2).mean())
+
+      print(f"MAE: {mae:.2f}, RMSE: {rmse:.2f}")
 
       metricas_df=pd.DataFrame([{
           "modelo":"LightGBM",
@@ -428,12 +646,11 @@ def entrenar_mlforecast(
         }),include_groups=False)
         .reset_index()
         )
-      
+
       #Skus con riesgo en el pronóstico con errores mayores al error promedio
       skus_riesgosos=cv_por_sku[cv_por_sku["MAE"]>mae*1.5]
       if len(skus_riesgosos)>0:
         print(f"Cantidad de SKUs con riesgo en el pronóstico: {len(skus_riesgosos)}, con un error 1.5 veces mayor al promedio ({mae:.2f})")
-        print(skus_riesgosos.sort_values("MAE", ascending=False).to_string())
         skus_riesgosos.to_excel(f"{Subrutas['validacion']}/skus_riesgosos_ML_{mes}.xlsx",index=False)
 
       metricas_df.to_parquet(f"{Subrutas['validacion']}/cv_metricas_ML_{mes}.parquet",index=False)
@@ -441,64 +658,31 @@ def entrenar_mlforecast(
       cv_por_sku.to_parquet(f"{Subrutas['validacion']}/cv_metricas_por_sku_ML_{mes}.parquet",index=False)
 
     else:
-      print("Debido a la longuitud de horizonte no se realizará CV")   
-
+      print("Debido a la longuitud de horizonte no se realizará CV")
+        
     mlf.fit(
         df_model,
         static_features=["unique_id"],
         fitted=True
     )
 
+    joblib.dump(mlf,f"{Subrutas['modelos']}/mlf_ML_{mes}.joblib")
+    df_model.to_parquet(f"{Subrutas['modelos']}/df_ML_{mes}.parquet",index=False)
+
+    metada={
+        "fecha_entrenamiento":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "num_SKUs":df_ML["unique_id"].nunique(),
+        "horizonte":horizonte,
+        "freq":frecuencia,
+        "lags":lags,
+        "skus":df_ML["unique_id"].unique().tolist()
+    }
+
+    metada["features_exogeneas"]=features_base_ml+cfg["extra_features"]
+
     if horizonte<=8:
-      match indice_sucursal:
-        case 1|2:
-          joblib.dump(mlf,f"{Subrutas['modelos']}/mlf_ML_{mes}.joblib")
-          df_model.to_parquet(f"{Subrutas['modelos']}/df_ML_{mes}.parquet",index=False)
-          joblib.dump({
-              "fecha_entrenamiento":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-              "num_SKUs":df_ML["unique_id"].nunique(),
-              "horizonte":horizonte,
-              "freq":frecuencia,
-              "metricas_cv":metricas_df.to_dict(orient="records"),
-              "features_exogeneas": ["y_prom_semana","y_prom_mes","y_prom_trimestre","coef_var"],
-              "skus":df_ML["unique_id"].unique().tolist()
-              },f"{Subrutas['metadatos']}/metadatos_ML_{mes}.joblib")
-        case 3|4:
-          joblib.dump(mlf,f"{Subrutas['modelos']}/mlf_ML_{mes}.joblib")
-          df_model.to_parquet(f"{Subrutas['modelos']}/df_ML_{mes}.parquet",index=False)
-          joblib.dump({
-              "fecha_entrenamiento":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-              "num_SKUs":df_ML["unique_id"].nunique(),
-              "horizonte":horizonte,
-              "freq":frecuencia,
-              "metricas_cv":metricas_df.to_dict(orient="records"),
-              "features_exogeneas": ["y_prom_semana","y_prom_mes","y_prom_trimestre"],
-              "skus":df_ML["unique_id"].unique().tolist()
-              },f"{Subrutas['metadatos']}/metadatos_ML_{mes}.joblib")
-    else:
-      match indice_sucursal:
-        case 1|2:
-          joblib.dump(mlf,f"{Subrutas['modelos']}/mlf_ML_{mes}.joblib")
-          df_model.to_parquet(f"{Subrutas['modelos']}/df_ML_{mes}.parquet",index=False)
-          joblib.dump({
-              "fecha_entrenamiento":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-              "num_SKUs":df_ML["unique_id"].nunique(),
-              "horizonte":horizonte,
-              "freq":frecuencia,
-              "features_exogeneas": ["y_prom_semana","y_prom_mes","y_prom_trimestre","coef_var"],
-              "skus":df_ML["unique_id"].unique().tolist()
-              },f"{Subrutas['metadatos']}/metadatos_ML_{mes}.joblib")
-        case 3|4:
-          joblib.dump(mlf,f"{Subrutas['modelos']}/mlf_ML_{mes}.joblib")
-          df_model.to_parquet(f"{Subrutas['modelos']}/df_ML_{mes}.parquet",index=False)
-          joblib.dump({
-              "fecha_entrenamiento":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-              "num_SKUs":df_ML["unique_id"].nunique(),
-              "horizonte":horizonte,
-              "freq":frecuencia,
-              "features_exogeneas": ["y_prom_semana","y_prom_mes","y_prom_trimestre"],
-              "skus":df_ML["unique_id"].unique().tolist()
-              },f"{Subrutas['metadatos']}/metadatos_ML_{mes}.joblib")
+      metada["metricas_cv"]=metricas_df.to_dict(orient="records")
+    joblib.dump(metada,f"{Subrutas['metadatos']}/metadatos_ML_{mes}.joblib")
 
     print("Modelo ML guardado en Drive")
 
@@ -514,19 +698,17 @@ def pronosticar_mlforecast(
 ) ->pd.DataFrame:
 
     mlf=joblib.load(f"{Subrutas['modelos']}/mlf_ML_{mes}.joblib")
-    match indice_sucursal:
-      case 1|2:
-        df_ML=df_ML[["unique_id","ds","y","week","month","quarter","y_prom_semana","y_prom_mes","y_prom_trimestre","coef_var"]].copy()
-      
-      case 3|4:
-        df_ML=df_ML[["unique_id","ds","y","week","month","quarter","y_prom_semana","y_prom_mes","y_prom_trimestre"]].copy()
-    
+    cfg=config_sucursal[indice_sucursal]
+    df_ML=df_ML[["unique_id","ds","y","week","month","quarter"]+features_base_ml+cfg["extra_features"]].copy()
+
     df_ML["unique_id"]=df_ML["unique_id"].astype(int)
     df_ML["ds"]=pd.to_datetime(df_ML["ds"])
-
+    
     df_futuro=mlf.make_future_dataframe(h=horizonte)
+    df_futuro["unique_id"]=df_futuro["unique_id"].astype(int)
 
-    df_futuro["week"]=df_futuro["ds"].dt.strftime('%U').astype(int)
+    semana_corr=df_futuro["ds"].dt.strftime('%U').astype(int)
+    df_futuro["week"]=np.where(semana_corr==0,53,semana_corr)
     df_futuro["month"]=df_futuro["ds"].dt.month.astype(int)
     df_futuro["quarter"]=df_futuro["ds"].dt.quarter.astype(int)
 
@@ -540,40 +722,24 @@ def pronosticar_mlforecast(
     )
 
     prom_mes=df_ML.groupby(["unique_id","month"])["y"].mean().reset_index().rename(columns={"y":"y_prom_mes"})
-
-    df_futuro=pd.merge(
-        df_futuro,
-        prom_mes,
-        on=["unique_id","month"],
-        how="left"
-    )
-
     prom_trim=df_ML.groupby(["unique_id","quarter"])["y"].mean().reset_index().rename(columns={"y":"y_prom_trimestre"})
 
-    df_futuro=pd.merge(
-        df_futuro,
-        prom_trim,
-        on=["unique_id","quarter"],
-        how="left"
-    )
+    df_futuro=(df_futuro
+               .merge(prom_mes,on=["unique_id","month"],how="left")
+               .merge(prom_trim,on=["unique_id","quarter"],how="left")
+               )
 
-    match indice_sucursal:
-      case 1|2:
-         coef_var=df_ML.groupby("unique_id")["coef_var"].last().reset_index()
-         df_futuro=pd.merge(
-             df_futuro,
-             coef_var,
-             on="unique_id",
-             how="left"
-             )
+    for feat in cfg["extra_features"]:
+        feat_estatica=df_ML.groupby("unique_id")[feat].last().reset_index()
+        df_futuro=df_futuro.merge(feat_estatica,on="unique_id",how="left")
 
     df_futuro=df_futuro.drop(columns=["week","month","quarter"],errors="ignore")
 
     forecast_df=mlf.predict(h=horizonte,X_df=df_futuro)
     forecast_df=forecast_df.rename(columns={"lgbm":"y_pred"})
     forecast_df["y_pred"]=forecast_df["y_pred"].clip(lower=0)
-     
-    forecast_df.to_parquet(f"{Subrutas['pronosticos']}/forecast_ML.parquet_{mes}",index=False)
+
+    forecast_df.to_parquet(f"{Subrutas['pronosticos']}/forecast_ML_{mes}.parquet",index=False)
 
     return forecast_df
 
@@ -642,6 +808,17 @@ def pipeline_completo(
 
     forecast_total.to_parquet(f"{Subrutas['pronosticos']}/forecast_total_{mes}.parquet",index=False)
     forecast=forecast_total.copy()
+
+    forecast["unique_id"]=pd.to_numeric(forecast["unique_id"],errors="coerce")
+
+    forecast_total_trimed=forecast_total[
+        (forecast_total["ds"]>=Inicio_Reporte) &
+        (forecast_total["ds"]<=Fin_Reporte)
+    ]
+
+    forecast_total_trimed.to_parquet(f"{Subrutas['pronosticos']}/forecast_total_{mes}.parquet",index=False)
+
+    forecast=forecast_total_trimed.copy()
 
     forecast["unique_id"]=pd.to_numeric(forecast["unique_id"],errors="coerce")
 
