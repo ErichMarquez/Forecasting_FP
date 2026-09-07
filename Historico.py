@@ -138,7 +138,7 @@ df_descontinuado.to_parquet(f"{Subrutas["metadatos"]}/skus_descontinuados.parque
 
 His_Sucursal_Semanales=df_activo.copy()
 
-#Nuevas selecciones de categoria
+#Selecciones de categoria
 LI_Sem=104
 LS_Sem=110
 Porc_ML=0.60
@@ -158,12 +158,61 @@ Contador_Ventas=(
 )
 
 Contador_Ventas['Porcentaje_Ventas']=Contador_Ventas['Semanas_Con_Venta']/Contador_Ventas['Semanas_Totales']
+
+#Syntetos-Boylan Clasificación
+ADI_CV2=(
+    His_Sucursal_Semanales
+    .groupby('SKU')
+    .agg(
+        Semanas_Con_Venta=('Venta Binaria','sum'),
+        Semanas_Totales=('fecha','count')
+    )
+    .reset_index()
+)
+
+demanda_positiva=His_Sucursal_Semanales[His_Sucursal_Semanales['ventas']>0]
+
+stats_demanda=(
+    demanda_positiva
+    .groupby('SKU')
+    .agg(
+        media_demanda=('ventas','mean'),
+        std_demanda=('ventas','std')
+    )
+    .reset_index()
+)
+
+ADI_CV2=pd.merge(ADI_CV2,stats_demanda,on=['SKU'],how='left')
+
+ADI_CV2['ADI']=np.where(
+    ADI_CV2['Semanas_Con_Venta']>0,
+    ADI_CV2['Semanas_Totales']/ADI_CV2['Semanas_Con_Venta'],
+    np.inf
+)
+
+ADI_CV2['CV2']=(ADI_CV2['std_demanda']/ADI_CV2['media_demanda'])**2
+
+ADI_Umbral=1.32
+CV2_Umbral=0.49
+
+ADI_CV2['Cuadrante']=np.select(
+    [
+        ADI_CV2['CV2'].isna(),
+        (np.round(ADI_CV2['ADI'],2)<=ADI_Umbral)&(ADI_CV2['CV2']<CV2_Umbral),
+        (np.round(ADI_CV2['ADI'],2)>ADI_Umbral)&(ADI_CV2['CV2']<CV2_Umbral),
+        (np.round(ADI_CV2['ADI'],2)<ADI_Umbral)&(ADI_CV2['CV2']>=CV2_Umbral),
+    ],
+    ['Datos Insuficientes','Suave','Intermitente','Erratico'],
+    default='Lumpy'
+)
+
 Contador_Ventas['Modelo Seleccionado']=np.select(
     [
-        (Contador_Ventas['Semanas_Con_Venta']>=LS_Sem) & (Contador_Ventas['Porcentaje_Ventas']>=Porc_ML),
-        (Contador_Ventas['Semanas_Totales']>=LI_Sem) & (Contador_Ventas['Semanas_Con_Venta']<LS_Sem)
+        ADI_CV2['Semanas_Totales']<LI_Sem,
+        ADI_CV2['Cuadrante'].isin(['Suave','Erratico']),
+        ADI_CV2['Cuadrante'].isin(['Intermitente','Lumpy'])
     ],
-    ['MLForecast','Método Intermitente'],
+    ['Sin pronóstico','MLForecast','Método Intermitente'],
     default='Sin pronóstico'
 )
 
@@ -173,9 +222,6 @@ SKU_ML=Contador_Ventas[Contador_Ventas['Modelo Seleccionado']=='MLForecast']
 
 #Extracción de Datos de Entrenamiento
 df_ML=His_Sucursal_Semanales[His_Sucursal_Semanales['SKU'].isin(SKU_ML['SKU'])].drop(columns='Venta Binaria').rename(columns={'fin_calendario':'fin_prom'}).copy().reset_index(drop=True)
-
-df_ML.to_csv('ML sucursal '+str(indice_sucursal)+'.csv',index=False)
-
+df_ML.to_csv(f"{Subrutas["datos"]}/ML sucursal "+str(indice_sucursal)+".csv",index=False)
 df_Intermitentes=His_Sucursal_Semanales[His_Sucursal_Semanales['SKU'].isin(SKU_Intermitentes['SKU'])].drop(columns='Venta Binaria').rename(columns={'fin_calendario':'fin_prom'}).copy().reset_index(drop=True)
-
-df_Intermitentes.to_csv('Intermitentes sucursal '+str(indice_sucursal)+'.csv',index=False)
+df_Intermitentes.to_csv(f"{Subrutas["datos"]}/Intermitentes sucursal "+str(indice_sucursal)+".csv",index=False)
