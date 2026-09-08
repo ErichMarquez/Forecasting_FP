@@ -36,6 +36,9 @@ import joblib
 import warnings
 from datetime import datetime
 
+#Costantes relacionadas al forecasting:
+frecuencia="W-SUN"
+
 #Rutas de Entrada para Entrenamiento
 ruta_Intermitente=f"{Subrutas["datos"]}/Intermitentes sucursal {indice_sucursal}.csv"
 ruta_ML=f"{Subrutas["datos"]}/ML sucursal {indice_sucursal}.csv"
@@ -449,6 +452,7 @@ def pronosticar_adida(
   forecast_df.to_parquet(f"{Subrutas['pronosticos']}/forecast_intermitente_{mes}.parquet",index=False)
 
   return forecast_df
+    
 #Fin de entrenamiento y pronóstico de Intermitentes
 
 #Configuración de features por sucursal de Continuos
@@ -599,7 +603,7 @@ def entrenar_mlforecast(
         models={
             "lgbm":LGBMRegressor(
                 n_estimators=n_optimo,
-                learning_rate=0.05,
+                learning_rate=0.03,
                 num_leaves=63,
                 max_depth=8,
                 min_child_samples=20,
@@ -614,6 +618,7 @@ def entrenar_mlforecast(
         lags=lags,
         lag_transforms=lag_transforms
     )
+    
 #Parte 3: Cross_Validation en caso de ser aplicable
     if horizonte<=8:
       print("Ejecutando cross-validation")
@@ -807,9 +812,6 @@ def pipeline_completo(
     )
 
     forecast_total.to_parquet(f"{Subrutas['pronosticos']}/forecast_total_{mes}.parquet",index=False)
-    forecast=forecast_total.copy()
-
-    forecast["unique_id"]=pd.to_numeric(forecast["unique_id"],errors="coerce")
 
     forecast_total_trimed=forecast_total[
         (forecast_total["ds"]>=Inicio_Reporte) &
