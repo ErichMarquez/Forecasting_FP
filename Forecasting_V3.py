@@ -218,7 +218,7 @@ lag_transforms_int_grupo_B={
 lag_transforms_int_Abarrotera={
     4: [RollingMean(window_size=4),RollingStd(window_size=4)],
     8: [RollingMean(window_size=8)]
-    }
+}
 
 lags_int_largos_Farmpronto=[13,26,52]
 lag_transforms_int_largos_Farmpronto={
