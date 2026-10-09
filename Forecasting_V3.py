@@ -11,11 +11,12 @@ Proyecto="/content/drive/MyDrive/Forecasting-V2"
 Inicio_Reporte=pd.Timestamp("2026-08-03") #El lunes siguiente al último domingo que se exluye
 Fin_Reporte=pd.Timestamp("2026-08-30") #Último Domingo que abarca el reporte
 
-indice_sucursal=4
+indice_sucursal=2
 mes="Agosto"
 Rutas={
     "sucursal": f"{Proyecto}/Suc{indice_sucursal}"
   }
+
 #Subcarpetas
 Subrutas={
     "modelos": f"{Rutas["sucursal"]}/modelos",
@@ -73,6 +74,34 @@ print(f"\nEsperando archivos en:")
 print(f"{ruta_Intermitente}")
 print(f"{ruta_ML}")
 
+def crear_mapa_skus(df:pd.DataFrame)->tuple[pd.DataFrame,dict,dict]:
+    skus_unicos=df["unique_id"].unique()
+    skus_mixtos=[s for s in skus_unicos if not str(s).isdigit()]
+
+    if len(skus_mixtos)==0:
+      return df,{},{}
+
+    skus_numericos=set(int(s) for s in skus_unicos if str(s).isdigit())
+    id_temporal=max(skus_numericos)+1
+
+    encode_map={}
+    decode_map={}
+
+    for sku in skus_mixtos:
+        while id_temporal in skus_numericos:
+            id_temporal+=1
+        encode_map[str(sku)]=id_temporal
+        decode_map[id_temporal]=str(sku)
+        skus_numericos.add(id_temporal)
+        id_temporal+=1
+
+    df=df.copy()
+    df["unique_id"]=df["unique_id"].apply(lambda x: str(encode_map.get(str(x),x)))
+
+    print(f"SKUs mixtos encontrados y recodificados: {len(skus_mixtos)}")
+
+    return df,encode_map,decode_map
+
 #Carga de los CSV
 def cargar_csv(
     ruta_intermitente: str=ruta_Intermitente,
@@ -89,18 +118,19 @@ def cargar_csv(
       df["ds"]=pd.to_datetime(df["ds"],format="%Y-%m-%d")
       df["y"]=pd.to_numeric(df["y"],errors="coerce")
       df["unique_id"]=df["unique_id"].astype(str)
-      df["id_prom"]=df["id_prom"].fillna(0).astype(int)
-      df["fin_prom"]=pd.to_datetime(df["fin_prom"],format="%Y-%m-%d",errors="coerce")
-      df["semanas_restantes_promo"]=(
-          (df["fin_prom"]-df["ds"]).dt.days
-          .clip(lower=0)
-          .fillna(0)
-          .div(7)
-          .round(0)
-          .astype(int)
-      )
+      if "id_prom" in df.columns:
+        df["id_prom"]=df["id_prom"].fillna(0).astype(int)
+        df["fin_prom"]=pd.to_datetime(df["fin_prom"],format="%Y-%m-%d",errors="coerce")
+        df["semanas_restantes_promo"]=(
+            (df["fin_prom"]-df["ds"]).dt.days
+           .clip(lower=0)
+           .fillna(0)
+           .div(7)
+           .round(0)
+           .astype(int)
+           )
       return df.sort_values(by=["unique_id","ds"]).reset_index(drop=True)
-
+        
     #Se agregan los features a futuro para los continuos
     def features_estacionalidad(df: pd.DataFrame)->pd.DataFrame:
         df=df.copy().sort_values(by=["unique_id","ds"]).reset_index(drop=True)
@@ -143,6 +173,15 @@ def cargar_csv(
 
     df_intermitente=ord_datos(pd.read_csv(ruta_intermitente))
     df_ML_sin_ft=ord_datos(pd.read_csv(ruta_ML))
+
+    df_intermitente,encode_map_int,decode_map_int=crear_mapa_skus(df_intermitente)
+    df_ML_sin_ft,encode_map_ML,decode_map_ML=crear_mapa_skus(df_ML_sin_ft)
+    
+    joblib.dump({
+        "decode_map_int":decode_map_int,
+        "decode_map_ML":decode_map_ML
+    },f"{Subrutas['datos']}/mapeo_skus.joblib")
+
     df_ML=features_estacionalidad(df_ML_sin_ft)
 
     df_ML.to_csv(f"{Subrutas['datos']}/ML_con_ft.csv",index=False)
@@ -162,6 +201,7 @@ from lightgbm import LGBMRegressor
 lags_int_grupo_A=[4,8,12,52]
 lags_int_grupo_B=[4,8,13,26,52]
 lags_int_grupo_C=[4,8,13,52]
+lags_int_Abarrotera=[4,8,13]
 
 lag_transforms_int_grupo_A={
     4: [RollingMean(window_size=4),RollingStd(window_size=4)],
@@ -175,14 +215,30 @@ lag_transforms_int_grupo_B={
     13: [RollingMean(window_size=13)]
 }
 
-config_sucursal_int={
-    1:{"lags_select":lags_int_grupo_C,"lag_transforms_corto":lag_transforms_int_grupo_B},
-    2:{"lags_select":lags_int_grupo_C,"lag_transforms_corto":lag_transforms_int_grupo_B},
-    3:{"lags_select":lags_int_grupo_C,"lag_transforms_corto":lag_transforms_int_grupo_B},
-    4:{"lags_select":lags_int_grupo_C,"lag_transforms_corto":lag_transforms_int_grupo_B},
-    6:{"lags_select":lags_int_grupo_A,"lag_transforms_corto":lag_transforms_int_grupo_A},
-    7:{"lags_select":lags_int_grupo_A,"lag_transforms_corto":lag_transforms_int_grupo_A}
+lag_transforms_int_Abarrotera={
+    4: [RollingMean(window_size=4),RollingStd(window_size=4)],
+    8: [RollingMean(window_size=8)]
+    }
+
+lags_int_largos_Farmpronto=[13,26,52]
+lag_transforms_int_largos_Farmpronto={
+    13: [RollingMean(window_size=13)]
 }
+
+lags_int_largos_Abarrotera=[13]
+lag_transforms_int_largos_Abarrotera={
+    13: [RollingMean(window_size=13)]
+}
+
+config_sucursal_int={
+    1:{"lags_select":lags_int_grupo_C,"lag_transforms_corto":lag_transforms_int_grupo_B,"lags_largos":lags_int_largos_Farmpronto,"lag_transforms_largo":lag_transforms_int_largos_Farmpronto},
+    2:{"lags_select":lags_int_grupo_C,"lag_transforms_corto":lag_transforms_int_grupo_B,"lags_largos":lags_int_largos_Farmpronto,"lag_transforms_largo":lag_transforms_int_largos_Farmpronto},
+    3:{"lags_select":lags_int_grupo_C,"lag_transforms_corto":lag_transforms_int_grupo_B,"lags_largos":lags_int_largos_Farmpronto,"lag_transforms_largo":lag_transforms_int_largos_Farmpronto},
+    4:{"lags_select":lags_int_grupo_C,"lag_transforms_corto":lag_transforms_int_grupo_B,"lags_largos":lags_int_largos_Farmpronto,"lag_transforms_largo":lag_transforms_int_largos_Farmpronto},
+    6:{"lags_select":lags_int_grupo_A,"lag_transforms_corto":lag_transforms_int_grupo_A,"lags_largos":lags_int_largos_Farmpronto,"lag_transforms_largo":lag_transforms_int_largos_Farmpronto},
+    7:{"lags_select":lags_int_grupo_A,"lag_transforms_corto":lag_transforms_int_grupo_A,"lags_largos":lags_int_largos_Farmpronto,"lag_transforms_largo":lag_transforms_int_largos_Farmpronto},
+    "Abarrotera":{"lags_select":lags_int_Abarrotera,"lag_transforms_corto":lag_transforms_int_Abarrotera,"lags_largos":lags_int_largos_Abarrotera,"lag_transforms_largo":lag_transforms_int_largos_Abarrotera}
+    }
 
 #Inicio de entrenamiento y pronóstico de Intermitentes
 def entrenar_adida(
@@ -220,15 +276,10 @@ def entrenar_adida(
     if horizonte<=8:
         lags=cfg_int["lags_select"]
         lag_transforms=cfg_int["lag_transforms_corto"]
-        tvp=1.65
     else:
         df_model["quarter"]=df_model["ds"].dt.quarter.astype(int)
-
-        lags=[13,26,52]
-        lag_transforms={
-            13: [RollingMean(window_size=13)]
-            }
-        tvp=1.35
+        lags=cfg_int["lags_largos"]
+        lag_transforms=cfg_int["lag_transforms_largo"]
 
     #Primera parte: Encontrar n_optimo con función objetivo compuesta
     def composite_metric(y_pred,dataset):
@@ -274,39 +325,53 @@ def entrenar_adida(
     x_val=features_df[features_df["ds"]>fecha_corte_features][x_columns]
     y_val=features_df[features_df["ds"]>fecha_corte_features]["y"]
 
+    tvp_candidates=np.arange(1.1,1.95,0.5)
+    best_overral_score=float("inf")
+
     lgb_train=lgb.Dataset(x_train,y_train)
     lgb_val=lgb.Dataset(x_val,y_val,reference=lgb_train)
-
-    params={
-        "objective":"tweedie",
-        "tweedie_variance_power":tvp,
-        "metric":"None",
-        "learning_rate":0.05,
-        "num_leaves":31,
-        "max_depth":8,
-        "min_child_samples":20,
-        "subsample":0.8,
-        "colsample_bytree":0.8,
-        "n_jobs":-1,
-        "random_state":42,
-        "verbose":-1
-    }
-
+    
     callbacks=[
         lgb.early_stopping(stopping_rounds=50,verbose=False),
         lgb.log_evaluation(period=-1)
     ]
+    
+    for candidato_tvp in tvp_candidates:
+        params={
+            "objective":"tweedie",
+            "tweedie_variance_power":candidato_tvp,
+            "metric":"None",
+            "learning_rate":0.05,
+            "num_leaves":31,
+            "max_depth":8,
+            "min_child_samples":20,
+            "subsample":0.8,
+            "colsample_bytree":0.8,
+            "n_jobs":-1,
+            "random_state":42,
+            "verbose":-1
+        }
 
-    booster=lgb.train(
-        params,
-        lgb_train,
-        num_boost_round=1000,
-        valid_sets=[lgb_val],
-        feval=composite_metric,
-        callbacks=callbacks
-    )
+        booster_trial=lgb.train(
+            params,
+            lgb_train,
+            num_boost_round=1000,
+            valid_sets=[lgb_val],
+            feval=composite_metric,
+            callbacks=callbacks
+        )
 
-    n_optimo=booster.best_iteration
+        trial_score=booster_trial.best_score["valid_0"]["composite_error"]
+        trial_n_optimo=booster_trial.best_iteration
+
+        if trial_score<best_overral_score:
+            best_overral_score=trial_score
+            best_tvp=candidato_tvp
+            best_n_optimo=trial_n_optimo
+
+    tvp=best_tvp
+    n_optimo=best_n_optimo
+    print(f"TVP óptimo encontrado: {tvp}")
     print(f"Estimators óptimos encontrados: {n_optimo}")
 
     #Parte 2: Definición del modelo
@@ -342,6 +407,7 @@ def entrenar_adida(
           fitted=True,
           static_features=["unique_id"]
           )
+      
       mae=(cv_df["lgbm_intermitente"]-cv_df["y"]).abs().mean()
       rmse=np.sqrt(((cv_df["lgbm_intermitente"]-cv_df["y"])**2).mean())
       metricas_df=pd.DataFrame([{
@@ -349,6 +415,7 @@ def entrenar_adida(
           "MAE":round(mae,6),
           "RMSE":round(rmse,6)
           }])
+        
       cv_por_sku=(
           cv_df.groupby("unique_id")
           .apply(lambda g: pd.Series({
@@ -362,7 +429,6 @@ def entrenar_adida(
       skus_riesgosos=cv_por_sku[cv_por_sku["MAE"]>mae*1.5]
       if len(skus_riesgosos)>0:
           print(f"Cantidad de SKUs con riesgo en el pronóstico de intermitentes: {len(skus_riesgosos)}, con un error 1.5 veces mayor al promedio ({mae:.2f})")
-          print(skus_riesgosos.sort_values("MAE", ascending=False).to_string())
           skus_riesgosos.to_excel(f"{Subrutas['validacion']}/skus_riesgosos_Intermitentes_{mes}.xlsx",index=False)
 
       metricas_df.to_parquet(f"{Subrutas['validacion']}/cv_metricas_intermitente_{mes}.parquet", index=False)
@@ -377,6 +443,7 @@ def entrenar_adida(
         static_features=["unique_id"],
         fitted=True
         )
+    
     joblib.dump(mlf,f"{Subrutas['modelos']}/mlf_intermitentes_{mes}.joblib")
     df_model.to_parquet(f"{Subrutas['modelos']}/df_intermitentes_{mes}.parquet",index=False)
 
@@ -406,13 +473,12 @@ def pronosticar_adida(
 
   mlf=joblib.load(f"{Subrutas['modelos']}/mlf_intermitentes_{mes}.joblib")
 
-  if df_intermitente is None:
-    df_model=pd.read_parquet(f"{Subrutas['modelos']}/df_intermitentes_{mes}.parquet")
-  else:
-    df_model=df_intermitente[["unique_id","ds","y"]].copy()
+  df_model=df_intermitente[["unique_id","ds","y"]].copy()
 
   df_model["unique_id"]=df_model["unique_id"].astype(int)
-  df_futuro=mlf.make_future_dataframe(h=horizonte)
+  df_model["ds"]=pd.to_datetime(df_model["ds"])
+    
+  df_futuro["unique_id"]=df_futuro["unique_id"].astype(int)
   df_futuro["unique_id"]=df_futuro["unique_id"].astype(int)
 
   ultima_prop=(
@@ -453,14 +519,13 @@ def pronosticar_adida(
 
   return forecast_df
     
-#Fin de entrenamiento y pronóstico de Intermitentes
-
 #Configuración de features por sucursal de Continuos
 features_base_ml=["y_prom_semana","y_prom_mes","y_prom_trimestre"]
 
 lags_grupo_A=[4,8,12,52]
 lags_grupo_B=[4,8,13,26,52]
 lags_grupo_D=[4,8,12,13,52]
+lags_grupo_Abarrotera=[4,8,13]
 
 lag_transforms_grupo_A={
     4: [RollingMean(window_size=4),RollingStd(window_size=4)],
@@ -491,14 +556,31 @@ lag_transforms_grupo_D={
     52: [RollingMean(window_size=52)]
 }
 
-config_sucursal={
-    1:{"lags_select":lags_grupo_D,"extra_features":["coef_var"],"lag_transforms_corto":lag_transforms_grupo_D},
-    2:{"lags_select":lags_grupo_D,"extra_features":[],"lag_transforms_corto":lag_transforms_grupo_D},
-    3:{"lags_select":lags_grupo_D,"extra_features":[],"lag_transforms_corto":lag_transforms_grupo_D},
-    4:{"lags_select":lags_grupo_B,"extra_features":[],"lag_transforms_corto":lag_transforms_grupo_B},
-    6:{"lags_select":lags_grupo_A,"extra_features":[],"lag_transforms_corto":lag_transforms_grupo_C},
-    7:{"lags_select":lags_grupo_A,"extra_features":[],"lag_transforms_corto":lag_transforms_grupo_C}
+lag_transforms_grupo_Abarrotera={
+    4: [RollingMean(window_size=4),RollingStd(window_size=4)],
+    8: [RollingMean(window_size=8)],
 }
+
+lags_largos_Farmapronto=[13,26,52]
+lag_transforms_largos_Farmapronto={
+    13: [RollingMean(window_size=13)],
+    26: [RollingMean(window_size=26)]
+}
+
+lags_largos_Abarrotera=[13]
+lag_transforms_largos_Abarrotera={
+    13: [RollingMean(window_size=13)]
+}
+
+config_sucursal={
+    1:{"lags_select":lags_grupo_D,"extra_features":["coef_var"],"lag_transforms_corto":lag_transforms_grupo_D,"lags_largos":lags_largos_Farmapronto,"lags_transforms_largo":lag_transforms_largos_Farmapronto},
+    2:{"lags_select":lags_grupo_D,"extra_features":[],"lag_transforms_corto":lag_transforms_grupo_D,"lags_largos":lags_largos_Farmapronto,"lags_transforms_largo":lag_transforms_largos_Farmapronto},
+    3:{"lags_select":lags_grupo_D,"extra_features":[],"lag_transforms_corto":lag_transforms_grupo_D,"lags_largos":lags_largos_Farmapronto,"lags_transforms_largo":lag_transforms_largos_Farmapronto},
+    4:{"lags_select":lags_grupo_B,"extra_features":[],"lag_transforms_corto":lag_transforms_grupo_B,"lags_largos":lags_largos_Farmapronto,"lags_transforms_largo":lag_transforms_largos_Farmapronto},
+    6:{"lags_select":lags_grupo_A,"extra_features":[],"lag_transforms_corto":lag_transforms_grupo_C,"lags_largos":lags_largos_Farmapronto,"lags_transforms_largo":lag_transforms_largos_Farmapronto},
+    7:{"lags_select":lags_grupo_A,"extra_features":[],"lag_transforms_corto":lag_transforms_grupo_C,"lags_largos":lags_largos_Farmapronto,"lags_transforms_largo":lag_transforms_largos_Farmapronto},
+    "Abarrotera":{"lags_select":lags_grupo_Abarrotera,"extra_features":[],"lag_transforms_corto":lag_transforms_grupo_Abarrotera,"lags_largos":lags_largos_Abarrotera,"lags_transforms_largo":lag_transforms_largos_Abarrotera}
+    }
 
 #Inicio de entrenamiento y pronóstico de Continuos
 def entrenar_mlforecast(
@@ -514,10 +596,9 @@ def entrenar_mlforecast(
       lags=cfg["lags_select"]
       lag_transforms=cfg["lag_transforms_corto"]
     else:
-      lags=[13,26,52]
-      lag_transforms={
-          13: [RollingMean(window_size=13)],
-          }
+      lags=cfg["lags_largos"]
+      lag_transforms=cfg["lags_transforms_largo"]
+        
     #Primera parte: Encontrar n_optimo con una función objetivo compuesta
     def composite_metric(y_pred,dataset):
         y_true=dataset.get_label()
@@ -596,8 +677,6 @@ def entrenar_mlforecast(
     n_optimo=booster.best_iteration
     print(f"Estimators óptimos encontrados: {n_optimo}")
 
-    
-
     #Parte 2: Definición del modelo
     mlf=MLForecast(
         models={
@@ -619,7 +698,7 @@ def entrenar_mlforecast(
         lag_transforms=lag_transforms
     )
     
-#Parte 3: Cross_Validation en caso de ser aplicable
+    #Parte 3: Cross_Validation en caso de ser aplicable
     if horizonte<=8:
       print("Ejecutando cross-validation")
       cv_df=mlf.cross_validation(
@@ -795,7 +874,29 @@ def pipeline_completo(
     forecast_ML=pronosticar_mlforecast(df_ML,horizonte)
 
     print(f"\n [4/4] Generando resultados")
-    nombre_map=pd.concat([
+    mapa_skus=joblib.load(f"{Subrutas['datos']}/mapeo_skus.joblib")
+    decode_map={**mapa_skus["decode_map_int"],**mapa_skus["decode_map_ML"]}
+
+    def decodificar_sku(x):
+        try:
+          return str(decode_map.get(int(x),x))
+        except (ValueError,TypeError):
+          return str(x)
+            
+    if decode_map:
+        nombres_int=pd.read_csv(ruta_intermitente)
+        nombres_ML=pd.read_csv(ruta_ML)
+
+        nombre_map=pd.concat([
+            nombres_int.drop_duplicates("SKU")[["SKU","producto"]],
+            nombres_ML.drop_duplicates("SKU")[["SKU","producto"]]
+            ]).drop_duplicates("SKU").reset_index(drop=True)
+
+        nombre_map["unique_id"]=nombre_map["SKU"].astype(str).str.lstrip("0").astype(str)
+        nombre_map.drop(columns=["SKU"],inplace=True)
+
+    else:
+        nombre_map=pd.concat([
         df_intermitente.drop_duplicates("unique_id")[["unique_id","producto"]],
         df_ML.drop_duplicates("unique_id")[["unique_id","producto"]]
         ]).drop_duplicates("unique_id").reset_index(drop=True)
@@ -806,12 +907,14 @@ def pipeline_completo(
     forecast_ML["unique_id"]=forecast_ML["unique_id"].astype(str)
     forecast_intermitente["unique_id"]=forecast_intermitente["unique_id"].astype(str)
 
-    forecast_total=(
-        pd.concat([forecast_intermitente,forecast_ML],ignore_index=True)
-        .merge(nombre_map,on="unique_id",how="left")
-    )
+    forecast_total=pd.concat([forecast_intermitente,forecast_ML],ignore_index=True)
 
-    forecast_total.to_parquet(f"{Subrutas['pronosticos']}/forecast_total_{mes}.parquet",index=False)
+    if decode_map:
+        forecast_total["unique_id"]=forecast_total["unique_id"].apply(decodificar_sku)
+
+    forecast_total=forecast_total.merge(nombre_map,on="unique_id",how="left")
+
+    forecast_total.to_parquet(f"{Subrutas['pronosticos']}/forecast_total_{mes}_full.parquet",index=False)
 
     forecast_total_trimed=forecast_total[
         (forecast_total["ds"]>=Inicio_Reporte) &
@@ -822,7 +925,8 @@ def pipeline_completo(
 
     forecast=forecast_total_trimed.copy()
 
-    forecast["unique_id"]=pd.to_numeric(forecast["unique_id"],errors="coerce")
+    if not decode_map:
+      forecast["unique_id"]=pd.to_numeric(forecast["unique_id"],errors="coerce")
 
     reporte=(
         forecast
