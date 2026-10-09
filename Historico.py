@@ -101,7 +101,7 @@ His_Sucursal_Semanales=fill_gaps(
 His_Sucursal_Semanales['ventas']=His_Sucursal_Semanales['ventas'].fillna(0)
 His_Sucursal_Semanales['producto']=His_Sucursal_Semanales.groupby('SKU')['producto'].ffill()
 
-#Se agrega nuevo preprocessing: Filtración de productos descontinuados
+#Filtración de productos descontinuados
 semanas_sin_venta=16 #Hasta 4 meses sin que se resurta o venda un item
 
 Historico_Sucursal=His_Sucursal_Semanales.copy()
@@ -139,9 +139,14 @@ df_descontinuado.to_parquet(f"{Subrutas["metadatos"]}/skus_descontinuados.parque
 His_Sucursal_Semanales=df_activo.copy()
 
 #Selecciones de categoria
+Corte_Semanas=24 #6 meses para analizar
+FechaMax=His_Sucursal_Semanales['fecha'].max()
+Ventana=pd.Timedelta(weeks=Corte_Semanas)
+Fecha_Corte=FechaMax-Ventana
+
+His_Sucursal_Semanales['Venta Binaria']=(His_Sucursal_Semanales['ventas']>0).astype(int)
+
 LI_Sem=104
-LS_Sem=110
-Porc_ML=0.60
 
 His_Sucursal_Semanales['Venta Binaria']=(His_Sucursal_Semanales['ventas']>0).astype(int)
 
@@ -192,8 +197,10 @@ ADI_CV2['ADI']=np.where(
 
 ADI_CV2['CV2']=(ADI_CV2['std_demanda']/ADI_CV2['media_demanda'])**2
 
-ADI_Umbral=1.32
+ADI_Umbral_Entrada=1.32
+ADI_Umbral_Salida=1.15
 CV2_Umbral=0.49
+K_consecutivas=0
 
 ADI_CV2['Cuadrante']=np.select(
     [
@@ -206,14 +213,69 @@ ADI_CV2['Cuadrante']=np.select(
     default='Lumpy'
 )
 
-Contador_Ventas['Modelo Seleccionado']=np.select(
-    [
-        ADI_CV2['Semanas_Totales']<LI_Sem,
-        ADI_CV2['Cuadrante'].isin(['Suave','Erratico']),
-        ADI_CV2['Cuadrante'].isin(['Intermitente','Lumpy'])
-    ],
-    ['Sin pronóstico','MLForecast','Método Intermitente'],
-    default='Sin pronóstico'
+def calculo_adi_cv2(His_Sucursal_Semanales,fecha_corte):
+    datos=His_Sucursal_Semanales[His_Sucursal_Semanales['fecha']<=fecha_corte]
+    adi_cv2=(
+        datos
+        .groupby('SKU')
+        .agg(Semanas_Con_Venta=('Venta Binaria','sum'),Semanas_Totales=('fecha','count'))
+        .reset_index()
+    )
+
+    demanda_positiva=datos[datos['ventas']>0]
+    stats_demanda=(
+        demanda_positiva.groupby('SKU')
+        .agg(media_demanda=('ventas','mean'),std_demanda=('ventas','std'))
+        .reset_index()
+    )
+
+    adi_cv2=pd.merge(adi_cv2,stats_demanda,on=['SKU'],how='left')
+    adi_cv2['ADI']=np.where(
+        adi_cv2['Semanas_Con_Venta']>0,
+        adi_cv2['Semanas_Totales']/adi_cv2['Semanas_Con_Venta'],
+        np.inf
+    )
+
+    adi_cv2['CV2']=(adi_cv2['std_demanda']/adi_cv2['media_demanda'])**2
+    return adi_cv2
+
+def avanzar_estado(adi_cv2_i,estado,ADI_Umbral_Entrada,ADI_Umbral_Salida,K_consecutivas):
+    df=adi_cv2_i.merge(estado,on=['SKU'],how='left')
+    es_nuevo=df['Modelo_Actual'].isna()
+    df['Contador']=df['Contador'].fillna(0).astype(int)
+    elegible=df['CV2'].notna()
+
+    umbral_vigente=np.where(df['Modelo_Actual']=='MLForecast',ADI_Umbral_Entrada,ADI_Umbral_Salida)
+    crudo_existente=np.where(df['ADI']>umbral_vigente,'Método Intermitente','MLForecast')
+    crudo_nuevo=np.where(df['ADI']>ADI_Umbral_Entrada,'Método Intermitente','MLForecast')
+    df['Modelo_Crudo']=np.where(es_nuevo,crudo_nuevo,crudo_existente)
+
+    propone=elegible & ~es_nuevo & (df['Modelo_Actual']!=df['Modelo_Crudo'])
+    df['Contador']=np.where(propone,df['Contador']+1,np.where(elegible,0,df['Contador']))
+    confirma=propone & (df['Contador']>=K_consecutivas)
+
+    df['Modelo_Actual']=np.where(elegible & es_nuevo, df['Modelo_Crudo'], df['Modelo_Actual'])
+    df.loc[confirma,'Modelo_Actual']=df.loc[confirma,'Modelo_Crudo']
+    df.loc[confirma,'Contador']=0
+    return df[['SKU','Modelo_Actual','Contador']]
+
+n_periodos=K_consecutivas+1
+fecha_max=His_Sucursal_Semanales['fecha'].max()
+
+estado=pd.DataFrame(columns=['SKU','Modelo_Actual','Contador'])
+for i in range(n_periodos-1,-1,-1):
+    corte=fecha_max-pd.DateOffset(months=i)
+    adi_cv2=calculo_adi_cv2(His_Sucursal_Semanales,corte)
+    estado=avanzar_estado(adi_cv2,estado,ADI_Umbral_Entrada,ADI_Umbral_Salida,K_consecutivas)
+
+ADI_CV2=ADI_CV2.merge(estado[['SKU','Modelo_Actual']],on='SKU',how='left')
+ADI_CV2['Modelo_Actual']=ADI_CV2['Modelo_Actual'].fillna('Sin Pronóstico')
+
+Contador_Ventas=Contador_Ventas.merge(ADI_CV2[['SKU','Modelo_Actual']],on='SKU',how='left')
+Contador_Ventas['Modelo Seleccionado']=np.where(
+    Contador_Ventas['Semanas_Totales']<LI_Sem,
+    'Sin Pronóstico',
+    Contador_Ventas['Modelo_Actual']
 )
 
 SKU_NoViables=(Contador_Ventas[Contador_Ventas['Modelo Seleccionado']=='Sin pronóstico'])
