@@ -325,7 +325,7 @@ def entrenar_adida(
     x_val=features_df[features_df["ds"]>fecha_corte_features][x_columns]
     y_val=features_df[features_df["ds"]>fecha_corte_features]["y"]
 
-    tvp_candidates=np.arange(1.1,1.95,0.5)
+    tvp_candidates=np.arange(1.15,1.75,0.1)
     best_overral_score=float("inf")
 
     lgb_train=lgb.Dataset(x_train,y_train)
@@ -524,12 +524,14 @@ features_base_ml=["y_prom_semana","y_prom_mes","y_prom_trimestre"]
 
 lags_grupo_A=[4,8,12,52]
 lags_grupo_B=[4,8,13,26,52]
+lags_grupo_C=[4,8,13,52]
 lags_grupo_D=[4,8,12,13,52]
 lags_grupo_Abarrotera=[4,8,13]
 
 lag_transforms_grupo_A={
     4: [RollingMean(window_size=4),RollingStd(window_size=4)],
-    12: [RollingMean(window_size=12)],
+    8: [RollingMean(window_size=8],
+    13: [RollingMean(window_size=13)],
     52: [RollingMean(window_size=52)],
 }
 
@@ -574,7 +576,7 @@ lag_transforms_largos_Abarrotera={
 
 config_sucursal={
     1:{"lags_select":lags_grupo_D,"extra_features":["coef_var"],"lag_transforms_corto":lag_transforms_grupo_D,"lags_largos":lags_largos_Farmapronto,"lags_transforms_largo":lag_transforms_largos_Farmapronto},
-    2:{"lags_select":lags_grupo_D,"extra_features":[],"lag_transforms_corto":lag_transforms_grupo_D,"lags_largos":lags_largos_Farmapronto,"lags_transforms_largo":lag_transforms_largos_Farmapronto},
+    2:{"lags_select":lags_grupo_B,"extra_features":[],"lag_transforms_corto":lag_transforms_grupo_A,"lags_largos":lags_largos_Farmapronto,"lags_transforms_largo":lag_transforms_largos_Farmapronto},
     3:{"lags_select":lags_grupo_D,"extra_features":[],"lag_transforms_corto":lag_transforms_grupo_D,"lags_largos":lags_largos_Farmapronto,"lags_transforms_largo":lag_transforms_largos_Farmapronto},
     4:{"lags_select":lags_grupo_B,"extra_features":[],"lag_transforms_corto":lag_transforms_grupo_B,"lags_largos":lags_largos_Farmapronto,"lags_transforms_largo":lag_transforms_largos_Farmapronto},
     6:{"lags_select":lags_grupo_A,"extra_features":[],"lag_transforms_corto":lag_transforms_grupo_C,"lags_largos":lags_largos_Farmapronto,"lags_transforms_largo":lag_transforms_largos_Farmapronto},
