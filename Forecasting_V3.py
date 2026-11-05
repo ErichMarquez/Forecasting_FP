@@ -478,7 +478,7 @@ def pronosticar_adida(
   df_model["unique_id"]=df_model["unique_id"].astype(int)
   df_model["ds"]=pd.to_datetime(df_model["ds"])
     
-  df_futuro["unique_id"]=df_futuro["unique_id"].astype(int)
+  df_futuro=mlf.make_future_dataframe(h=horizonte)
   df_futuro["unique_id"]=df_futuro["unique_id"].astype(int)
 
   ultima_prop=(
@@ -530,7 +530,7 @@ lags_grupo_Abarrotera=[4,8,13]
 
 lag_transforms_grupo_A={
     4: [RollingMean(window_size=4),RollingStd(window_size=4)],
-    8: [RollingMean(window_size=8],
+    8: [RollingMean(window_size=8)],
     13: [RollingMean(window_size=13)],
     52: [RollingMean(window_size=52)],
 }
