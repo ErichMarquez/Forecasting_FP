@@ -205,9 +205,9 @@ K_consecutivas=0
 ADI_CV2['Cuadrante']=np.select(
     [
         ADI_CV2['CV2'].isna(),
-        (np.round(ADI_CV2['ADI'],2)<=ADI_Umbral)&(ADI_CV2['CV2']<CV2_Umbral),
-        (np.round(ADI_CV2['ADI'],2)>ADI_Umbral)&(ADI_CV2['CV2']<CV2_Umbral),
-        (np.round(ADI_CV2['ADI'],2)<ADI_Umbral)&(ADI_CV2['CV2']>=CV2_Umbral),
+        (np.round(ADI_CV2['ADI'],2)<=ADI_Umbral_Entrada)&(ADI_CV2['CV2']<CV2_Umbral),
+        (np.round(ADI_CV2['ADI'],2)>ADI_Umbral_Entrada)&(ADI_CV2['CV2']<CV2_Umbral),
+        (np.round(ADI_CV2['ADI'],2)<ADI_Umbral_Entrada)&(ADI_CV2['CV2']>=CV2_Umbral),
     ],
     ['Datos Insuficientes','Suave','Intermitente','Erratico'],
     default='Lumpy'
