@@ -200,7 +200,7 @@ ADI_CV2['CV2']=(ADI_CV2['std_demanda']/ADI_CV2['media_demanda'])**2
 ADI_Umbral_Entrada=1.32
 ADI_Umbral_Salida=1.15
 CV2_Umbral=0.49
-K_consecutivas=0
+K_consecutivas=6
 
 ADI_CV2['Cuadrante']=np.select(
     [
@@ -278,7 +278,7 @@ Contador_Ventas['Modelo Seleccionado']=np.where(
     Contador_Ventas['Modelo_Actual']
 )
 
-SKU_NoViables=(Contador_Ventas[Contador_Ventas['Modelo Seleccionado']=='Sin pronóstico'])
+SKU_NoViables=(Contador_Ventas[Contador_Ventas['Modelo Seleccionado']=='Sin Pronóstico'])
 SKU_Intermitentes=Contador_Ventas[Contador_Ventas['Modelo Seleccionado']=='Método Intermitente']
 SKU_ML=Contador_Ventas[Contador_Ventas['Modelo Seleccionado']=='MLForecast']
 
